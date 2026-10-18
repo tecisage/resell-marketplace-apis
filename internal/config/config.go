@@ -8,15 +8,16 @@ import (
 )
 
 type Config struct {
-	Port             string
-	Env              string
-	DB_URL           string
-	JWTSecret        string
-	R2_ACCOUNT_ID    string
-	R2_ACCESS_KEY    string
-	R2_ACCESS_SECRET string
-	R2_BUCKET        string
-	AllowedOrigins   []string
+	Port               string
+	Env                string
+	DB_URL             string
+	JWTSecret          string
+	R2_ACCOUNT_ID      string
+	R2_ACCESS_KEY      string
+	R2_ACCESS_SECRET   string
+	R2_BUCKET          string
+	AllowedOrigins     []string
+	TrustedProxyHeader string
 }
 
 func MustLoad() Config {
@@ -41,6 +42,8 @@ func MustLoad() Config {
 	if jwtSecret == "" {
 		panic("JWT_SECRET is not set")
 	}
+
+	trustedProxyHeader := os.Getenv("TRUSTED_PROXY_HEADER")
 
 	R2_ACCOUNT_ID := os.Getenv("R2_ACCOUNT_ID")
 	if R2_ACCOUNT_ID == "" {
@@ -76,14 +79,15 @@ func MustLoad() Config {
 	}
 
 	return Config{
-		Port:             port,
-		Env:              env,
-		DB_URL:           db_url,
-		JWTSecret:        jwtSecret,
-		R2_ACCOUNT_ID:    R2_ACCOUNT_ID,
-		R2_ACCESS_KEY:    R2_ACCESS_KEY,
-		R2_ACCESS_SECRET: R2_ACCESS_SECRET,
-		R2_BUCKET:        R2_BUCKET,
-		AllowedOrigins:   allowedOrigins,
+		Port:               port,
+		Env:                env,
+		DB_URL:             db_url,
+		JWTSecret:          jwtSecret,
+		R2_ACCOUNT_ID:      R2_ACCOUNT_ID,
+		R2_ACCESS_KEY:      R2_ACCESS_KEY,
+		R2_ACCESS_SECRET:   R2_ACCESS_SECRET,
+		R2_BUCKET:          R2_BUCKET,
+		AllowedOrigins:     allowedOrigins,
+		TrustedProxyHeader: trustedProxyHeader,
 	}
 }

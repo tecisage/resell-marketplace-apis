@@ -14,6 +14,7 @@ import (
 	middleware "github.com/tecisage/resell-apis/internal/middlewares"
 	"github.com/tecisage/resell-apis/internal/storage"
 	"github.com/tecisage/resell-apis/internal/worker"
+	"golang.org/x/time/rate"
 )
 
 func main() {
@@ -57,10 +58,27 @@ func main() {
 	// health check
 	mux.HandleFunc("GET /healthz", handlers.Healthz)
 
+	// rate limiting
+
+	// 60 req per second --> 1 token/sec, burst 60
+	globalLimiter := middleware.RateLimitMiddleware(logger, rate.Every(time.Second), 100, cfg)
+
+	signInRateLimiter := middleware.RateLimitMiddleware(logger, rate.Every(time.Second*12), 5, cfg)
+	// rate.Every(time.Second*12) --> means it will take 12 seconds to fill one token. 1/12 tokens per second --> 5 req/min
+	// burst 5 --> means it will allow 5 requests at once (max capacity of bucket for an IP)
+	// for login we allow only 5 requests per minute per user
+
+	// ====== If you want to allow 500 req per min per user ======
+	// 500 req/ min ==> 60 sec/req per minute ==> 60/500 = 0.12 sec/req per minute
+	//means it will take 0.12 seconds to fill one token and it will allow 500 requests at once (max capacity of bucket for an IP)
+	// SignInRateLimiter := middleware.RateLimitMiddleware(logger, rate.Every(time.Millisecond*120), 500, cfg)
+	// =======================
+	signUpRateLimiter := middleware.RateLimitMiddleware(logger, rate.Every(time.Minute*1), 3, cfg)
+
 	// auth routes
 	authHandler := handlers.NewAuthHandler(db, logger, cfg.JWTSecret)
-	mux.HandleFunc("POST /auth/signup", authHandler.Signup)
-	mux.HandleFunc("POST /auth/login", authHandler.Login)
+	mux.Handle("POST /auth/signup", signUpRateLimiter(http.HandlerFunc(authHandler.Signup)))
+	mux.Handle("POST /auth/login", signInRateLimiter(http.HandlerFunc(authHandler.Login)))
 	mux.HandleFunc("POST /auth/logout", authHandler.Logout)
 
 	// 2. Protect routes (e.g. creating/deleting listings)
@@ -79,7 +97,7 @@ func main() {
 
 	// middlewares
 	corsMiddleware := middleware.CORSMiddleware(cfg.AllowedOrigins)
-	rootHandler := middleware.RequestIDMiddleware(corsMiddleware(mux))
+	rootHandler := globalLimiter(middleware.RequestIDMiddleware(corsMiddleware(mux)))
 
 	// create http server
 	log.Println("Starting server on :" + cfg.Port)
