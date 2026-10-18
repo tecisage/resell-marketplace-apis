@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tecisage/resell-apis/internal/config"
@@ -21,12 +22,16 @@ type bucket struct {
 
 // if we want 100 reqs per minute, then filling rate 100/60 tokens per second
 type bucketLimiter struct {
+	mu    sync.Mutex
 	items map[string]*bucket
 	limit rate.Limit // token filling speed per second
 	burst int        // max tokens to store
 }
 
 func (bl *bucketLimiter) allow(ip string) bool {
+	bl.mu.Lock()
+	defer bl.mu.Unlock()
+
 	b, exists := bl.items[ip]
 	if !exists {
 		b = &bucket{
