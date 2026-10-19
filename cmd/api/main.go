@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/tecisage/resell-apis/internal/config"
@@ -17,10 +20,19 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const (
+	serverShutdownTimeout = 15 * time.Second
+)
+
 func main() {
 
 	// load config
 	cfg := config.MustLoad()
+
+	// interupt comes when you press ctrl+c
+	// syscall.SIGTERM comes when you press kill command --> comes mainly from the orchestrators (kubernetes, Docker)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// DB connect
 	db, err := db.Connect(cfg.DB_URL)
@@ -110,8 +122,30 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// start server
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("main.srv.ListenAndServe: %v", err)
+	// start server - we have to. move this into a seprate goroutine because ListenAndServe is a blocking call and we can't proceed to other instructions below it.
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("main.srv.ListenAndServe: %v", err)
+		}
+	}()
+
+	// wait for interrupt signal - unblock when we receive the interrupt signal (ctrl + c) or kill command
+	<-ctx.Done()
+	logger.Info("siginal received, shutting down gracefully")
+	stop()
+
+	// shutdown server gracefully or Clear the resources
+	// give 1 minute to server to shut down gracefully
+
+	// 1) stop accepting new requests
+	// 2) wait for existing requests to finish
+	// 3) clean up resources (close db, close r2 client, etc)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+	defer shutdownCancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("main.srv.Shutdown: %v", err)
 	}
+
 }
