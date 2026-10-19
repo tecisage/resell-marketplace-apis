@@ -44,15 +44,15 @@ func scale(src image.Image, maxEdge int) image.Image {
 
 	if w > maxEdge || h > maxEdge {
 		if w >= h {
-			// width is greated = Landscape
-			newH = maxEdge
-			ratio := float64(maxEdge) / float64(w)
-			newW = int(float64(h) * ratio)
-		} else {
-			// height is greater = portrait
+			// Landscape or square: width is the longest edge
 			newW = maxEdge
+			ratio := float64(maxEdge) / float64(w)
+			newH = int(float64(h) * ratio)
+		} else {
+			// Portrait: height is the longest edge
+			newH = maxEdge
 			ratio := float64(maxEdge) / float64(h)
-			newH = int(float64(w) * ratio)
+			newW = int(float64(w) * ratio)
 		}
 	}
 
