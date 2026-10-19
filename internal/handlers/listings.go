@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/tecisage/resell-apis/internal/dtos"
@@ -13,6 +15,12 @@ import (
 	middleware "github.com/tecisage/resell-apis/internal/middlewares"
 	"github.com/tecisage/resell-apis/internal/services"
 	"github.com/tecisage/resell-apis/internal/storage"
+)
+
+const (
+	DefaultListLimit = 6
+	MinListLimit     = 1
+	MaxListLimit     = 100
 )
 
 type ListingHandler struct {
@@ -34,7 +42,34 @@ func (lh *ListingHandler) GetListings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	reqId := middleware.GetRequestID(ctx)
 
-	listings, err := lh.ListingService.GetListings(ctx, reqId)
+	// {
+	// 	"cursor": "eyJpZCI6ImU0YjJkNTg5LTk4MzItNDdkMy1iMTg0LWVlZjdiNTM5YmY1NyIsImNyZWF0ZWRfYXQiOiIyMDI2LTAzLTIwVDEwOjA1OjAwWiIsInZlcnNpb24iOjF9",
+	// 	"limit": "6"
+	// }
+
+	limit, err := parseListingLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		httpx.ValidationError(w, http.StatusBadRequest, err.Error(), httpx.CodeValidationFailed, "limit")
+		return
+	}
+
+	rawCursor := r.URL.Query().Get("cursor")
+	if rawCursor == "" {
+		rawCursor = r.URL.Query().Get("after")
+	}
+
+	var cursor *dtos.ListingCursor
+	if rawCursor != "" {
+		c, err := dtos.DecodeCursor(rawCursor)
+		if err != nil {
+			lh.Logger.Error("GetListings: invalid cursor", "request_id", reqId, "cursor", rawCursor, "err", err)
+			httpx.ValidationError(w, http.StatusBadRequest, "invalid pagination cursor", httpx.CodeValidationFailed, "cursor")
+			return
+		}
+		cursor = c
+	}
+
+	resp, err := lh.ListingService.GetListings(ctx, reqId, limit, cursor)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "internal server error", httpx.CodeInternalError)
 		return
@@ -42,7 +77,7 @@ func (lh *ListingHandler) GetListings(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(listings); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		lh.Logger.Error("GetListings encode error", "request_id", reqId, "err", err)
 	}
 }
@@ -173,4 +208,21 @@ func (lh *ListingHandler) CreateListing(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(out)
 
+}
+
+func parseListingLimit(raw string) (int, error) {
+	if raw == "" {
+		return DefaultListLimit, nil
+	}
+
+	limit, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("limit must be an integer value")
+	}
+
+	if limit < MinListLimit || limit > MaxListLimit {
+		return 0, fmt.Errorf("limit must be between %d and %d", MinListLimit, MaxListLimit)
+	}
+
+	return limit, nil
 }

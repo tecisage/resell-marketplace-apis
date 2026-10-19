@@ -1,6 +1,9 @@
 package dtos
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -138,4 +141,74 @@ func mintFinalObjectKey(listingID uuid.UUID, imageID uuid.UUID) string {
 func MintImageKey(imageID uuid.UUID) string {
 	// todo: currently we convert all images to .jpeg, we should use the original extension
 	return fmt.Sprintf("%s%s", imageID.String(), ImageProcessedExt)
+}
+
+const CursorVersion = 1
+
+type ListingCursor struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	Version   int       `json:"version"`
+}
+
+type PaginationMeta struct {
+	Limit      int     `json:"limit"`
+	NextCursor *string `json:"next_cursor"`
+	HasMore    bool    `json:"has_more"`
+}
+
+type PaginatedListingsResponse struct {
+	Data       []ListingResponse `json:"data"`
+	Pagination PaginationMeta    `json:"pagination"`
+}
+
+func EncodeCursor(id string, createdAt time.Time) (string, error) {
+	payload := ListingCursor{
+		ID:        id,
+		CreatedAt: createdAt.UTC(),
+		Version:   CursorVersion,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func DecodeCursor(encoded string) (*ListingCursor, error) {
+	var b []byte
+	var err error
+
+	// Try URL safe unpadded encoding first
+	b, err = base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		// Fallback to URL safe with padding
+		b, err = base64.URLEncoding.DecodeString(encoded)
+		if err != nil {
+			// Fallback to standard encoding
+			b, err = base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return nil, errors.New("invalid base64 cursor")
+			}
+		}
+	}
+
+	var cursor ListingCursor
+	if err := json.Unmarshal(b, &cursor); err != nil {
+		return nil, errors.New("invalid cursor payload")
+	}
+
+	if cursor.Version != CursorVersion {
+		return nil, fmt.Errorf("unsupported cursor version: %d", cursor.Version)
+	}
+
+	if _, err := uuid.Parse(cursor.ID); err != nil {
+		return nil, errors.New("invalid cursor id format")
+	}
+
+	if cursor.CreatedAt.IsZero() {
+		return nil, errors.New("invalid cursor timestamp")
+	}
+
+	return &cursor, nil
 }

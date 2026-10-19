@@ -138,18 +138,51 @@ func (ls *ListingService) DeleteListing(ctx context.Context, reqId string, listi
 	return rowsAffected, nil
 }
 
-func (ls *ListingService) GetListings(ctx context.Context, reqId string) ([]dtos.ListingResponse, error) {
-	query := `
+func (ls *ListingService) GetListings(ctx context.Context, reqId string, limit int, cursor *dtos.ListingCursor) (*dtos.PaginatedListingsResponse, error) {
+	fetchLimit := limit + 1
+
+	queryWithoutCursor := `
 		SELECT 
 			l.id, l.title, l.description, l.price, l.city, l.image, l.status, l.created_at, l.updated_at, l.created_by,
 			i.id as image_id, i.object_key, i.position
 		FROM listings l
 		LEFT JOIN images i ON i.listing_id = l.id
-		WHERE l.id IN (SELECT id FROM listings ORDER BY created_at DESC LIMIT 100)
-		ORDER BY l.created_at DESC, i.position ASC;
+		WHERE l.id IN (
+			SELECT id FROM listings l2
+			WHERE l2.status = 'ready'
+			ORDER BY l2.created_at DESC, l2.id DESC 
+			LIMIT $1
+		)
+		ORDER BY l.created_at DESC, l.id DESC, i.position ASC;
 	`
 
-	rows, err := ls.Db.QueryContext(ctx, query)
+	queryWithCursor := `
+		SELECT 
+			l.id, l.title, l.description, l.price, l.city, l.image, l.status, l.created_at, l.updated_at, l.created_by,
+			i.id as image_id, i.object_key, i.position
+		FROM listings l
+		LEFT JOIN images i ON i.listing_id = l.id
+		WHERE l.id IN (
+			SELECT id FROM listings l2
+			WHERE l2.status = 'ready'
+			AND (l2.created_at, l2.id) < ($1, $2)
+			ORDER BY l2.created_at DESC, l2.id DESC 
+			LIMIT $3
+		)
+		ORDER BY l.created_at DESC, l.id DESC, i.position ASC;
+	`
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+
+	if cursor == nil {
+		rows, err = ls.Db.QueryContext(ctx, queryWithoutCursor, fetchLimit)
+	} else {
+		rows, err = ls.Db.QueryContext(ctx, queryWithCursor, cursor.CreatedAt, cursor.ID, fetchLimit)
+	}
+
 	if err != nil {
 		ls.Logger.Error("Listing Service: GetListings query error", "request_id", reqId, "err", err)
 		return nil, err
@@ -229,7 +262,30 @@ func (ls *ListingService) GetListings(ctx context.Context, reqId string) ([]dtos
 		return nil, err
 	}
 
-	return listings, nil
+	hasMore := len(listings) > limit
+	if hasMore {
+		listings = listings[:limit]
+	}
+
+	var nextCursor *string
+	if hasMore && len(listings) > 0 {
+		lastItem := listings[len(listings)-1]
+		encoded, err := dtos.EncodeCursor(lastItem.ID, lastItem.CreatedAt)
+		if err != nil {
+			ls.Logger.Error("Listing Service: GetListings encode cursor error", "request_id", reqId, "err", err)
+			return nil, err
+		}
+		nextCursor = &encoded
+	}
+
+	return &dtos.PaginatedListingsResponse{
+		Data: listings,
+		Pagination: dtos.PaginationMeta{
+			Limit:      limit,
+			NextCursor: nextCursor,
+			HasMore:    hasMore,
+		},
+	}, nil
 }
 
 func (ls *ListingService) GetListingByID(ctx context.Context, reqId string, listingId string) (*dtos.ListingResponse, error) {
