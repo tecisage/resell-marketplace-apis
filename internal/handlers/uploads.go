@@ -35,7 +35,7 @@ func (uh *UploadHandler) Presign(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		uh.Logger.Error("Error getting claims", "error", err, "request_id", requestId)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized", httpx.CodeUnauthorized)
 		return
 	}
 
@@ -45,7 +45,7 @@ func (uh *UploadHandler) Presign(w http.ResponseWriter, r *http.Request) {
 	var req dtos.PresignReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		uh.Logger.Error("Error decoding request", "error", err, "request_id", requestId)
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		httpx.Error(w, http.StatusBadRequest, "invalid request body", httpx.CodeBadRequest)
 		return
 	}
 
@@ -65,10 +65,10 @@ func (uh *UploadHandler) Presign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// create presigned urls
-	presignedURLS, err := uh.UploadService.GetPresignedURLs(presignedFileKeys, dtos.PresignTTL)
+	presignedURLS, err := uh.UploadService.GetPresignedURLs(ctx, presignedFileKeys, dtos.PresignTTL)
 	if err != nil {
 		uh.Logger.Error("Error getting presigned urls", "error", err, "request_id", requestId)
-		http.Error(w, "Failed to get presigned urls", http.StatusInternalServerError)
+		httpx.Error(w, http.StatusInternalServerError, "failed to get presigned urls", httpx.CodeInternalError)
 		return
 	}
 

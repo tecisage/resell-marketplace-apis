@@ -133,8 +133,8 @@ func (ah *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	err := ah.DB.QueryRowContext(ctx, getUserByEmailQuery, req.Email).Scan(&id, &name, &password)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			ah.Logger.Error("Login user not found", "request_id", reqId, "err", err)
-			httpx.Error(w, http.StatusNotFound, "Invalid Credentials", httpx.CodeNotFound)
+			ah.Logger.Warn("Login failed: user not found", "request_id", reqId)
+			httpx.Error(w, http.StatusUnauthorized, "Invalid credentials", httpx.CodeUnauthorized)
 			return
 		}
 		ah.Logger.Error("Login user query error", "request_id", reqId, "err", err)
@@ -144,8 +144,8 @@ func (ah *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	// Compare password
 	if err := bcrypt.CompareHashAndPassword([]byte(password), []byte(req.Password)); err != nil {
-		ah.Logger.Error("Login password comparison error", "request_id", reqId, "err", err)
-		httpx.Error(w, http.StatusUnauthorized, "Invalid Credentials", httpx.CodeNotFound)
+		ah.Logger.Warn("Login failed: password mismatch", "request_id", reqId)
+		httpx.Error(w, http.StatusUnauthorized, "Invalid credentials", httpx.CodeUnauthorized)
 		return
 	}
 

@@ -49,7 +49,27 @@ func (lh *ListingHandler) GetListings(w http.ResponseWriter, r *http.Request) {
 
 	limit, err := parseListingLimit(r.URL.Query().Get("limit"))
 	if err != nil {
-		httpx.ValidationError(w, http.StatusBadRequest, err.Error(), httpx.CodeValidationFailed, "limit")
+		var vErr *dtos.ValidationError
+		field := "limit"
+		msg := err.Error()
+		if errors.As(err, &vErr) && vErr != nil {
+			field = vErr.Field
+			msg = vErr.Message
+		}
+		httpx.ValidationError(w, http.StatusUnprocessableEntity, msg, httpx.CodeValidationFailed, field)
+		return
+	}
+
+	filter, err := parseListingsFilters(r.URL.Query())
+	if err != nil {
+		var vErr *dtos.ValidationError
+		field := "filter"
+		msg := err.Error()
+		if errors.As(err, &vErr) && vErr != nil {
+			field = vErr.Field
+			msg = vErr.Message
+		}
+		httpx.ValidationError(w, http.StatusUnprocessableEntity, msg, httpx.CodeValidationFailed, field)
 		return
 	}
 
@@ -63,13 +83,13 @@ func (lh *ListingHandler) GetListings(w http.ResponseWriter, r *http.Request) {
 		c, err := dtos.DecodeCursor(rawCursor)
 		if err != nil {
 			lh.Logger.Error("GetListings: invalid cursor", "request_id", reqId, "cursor", rawCursor, "err", err)
-			httpx.ValidationError(w, http.StatusBadRequest, "invalid pagination cursor", httpx.CodeValidationFailed, "cursor")
+			httpx.ValidationError(w, http.StatusUnprocessableEntity, "invalid pagination cursor", httpx.CodeValidationFailed, "cursor")
 			return
 		}
 		cursor = c
 	}
 
-	resp, err := lh.ListingService.GetListings(ctx, reqId, limit, cursor)
+	resp, err := lh.ListingService.GetListings(ctx, reqId, limit, cursor, filter)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "internal server error", httpx.CodeInternalError)
 		return
@@ -217,11 +237,17 @@ func parseListingLimit(raw string) (int, error) {
 
 	limit, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0, fmt.Errorf("limit must be an integer value")
+		return 0, &dtos.ValidationError{
+			Field:   "limit",
+			Message: "limit must be an integer value",
+		}
 	}
 
 	if limit < MinListLimit || limit > MaxListLimit {
-		return 0, fmt.Errorf("limit must be between %d and %d", MinListLimit, MaxListLimit)
+		return 0, &dtos.ValidationError{
+			Field:   "limit",
+			Message: fmt.Sprintf("limit must be between %d and %d", MinListLimit, MaxListLimit),
+		}
 	}
 
 	return limit, nil

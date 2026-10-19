@@ -15,7 +15,19 @@ import (
 const (
 	ListingPrefix     = "listings"
 	ImageProcessedExt = ".jpg"
+	PaisePerRupee     = 100
+	MaxPriceRupees    = 1_000_000_000 // ₹100 Crore / 1 Billion Rupees
 )
+
+// RupeesToPaise converts a price in Rupees to Paise (e.g., ₹500 -> 50000 paise)
+func RupeesToPaise(rupees int64) int64 {
+	return rupees * PaisePerRupee
+}
+
+// PaiseToRupees converts stored price in Paise back to Rupees for user display
+func PaiseToRupees(paise int64) int64 {
+	return paise / PaisePerRupee
+}
 
 type ListingStatusType string
 
@@ -28,7 +40,7 @@ const (
 type CreateListingRequest struct {
 	Title       string   `json:"title" binding:"required"`
 	Description string   `json:"description" binding:"required"`
-	Price       int64    `json:"price" binding:"required"`
+	Price       int64    `json:"price" binding:"required"` // in Rupees
 	City        string   `json:"city" binding:"required"`
 	ImageKeys   []string `json:"image_keys"` //uploads/<user-id>/<image-uuid>.png
 }
@@ -54,6 +66,9 @@ func (req *CreateListingRequest) Validate(userId string) (ListingUploadKeys, err
 	}
 	if req.Price <= 0 {
 		return ListingUploadKeys{}, &ValidationError{Field: "price", Message: "price must be greater than 0"}
+	}
+	if req.Price > MaxPriceRupees {
+		return ListingUploadKeys{}, &ValidationError{Field: "price", Message: fmt.Sprintf("price cannot exceed ₹%d", MaxPriceRupees)}
 	}
 	if strings.TrimSpace(req.City) == "" {
 		return ListingUploadKeys{}, &ValidationError{Field: "city", Message: "city is required"}
@@ -160,6 +175,13 @@ type PaginationMeta struct {
 type PaginatedListingsResponse struct {
 	Data       []ListingResponse `json:"data"`
 	Pagination PaginationMeta    `json:"pagination"`
+}
+
+type ListingFilter struct {
+	Status    string `json:"status"`
+	City      string `json:"city,omitempty"`
+	PriceFrom *int64 `json:"price_from,omitempty"`
+	PriceTo   *int64 `json:"price_to,omitempty"`
 }
 
 func EncodeCursor(id string, createdAt time.Time) (string, error) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -73,9 +74,11 @@ func (ls *ListingService) CreateListing(ctx context.Context, reqId string, req d
 		RETURNING id, title, status, created_at;
 	`
 
+	priceInPaise := dtos.RupeesToPaise(req.Price)
+
 	// Insert listing into database
 	var out dtos.CreateListingResponse
-	err = tx.QueryRowContext(ctx, query, listingUploadKeys.ListingID, req.Title, req.Description, req.Price, req.City, primaryImage, userId).
+	err = tx.QueryRowContext(ctx, query, listingUploadKeys.ListingID, req.Title, req.Description, priceInPaise, req.City, primaryImage, userId).
 		Scan(&out.ID, &out.Title, &out.Status, &out.Created)
 	if err != nil {
 		ls.Logger.Error("Listing Service: CreateListing insert error", "request_id", reqId, "err", err)
@@ -138,127 +141,20 @@ func (ls *ListingService) DeleteListing(ctx context.Context, reqId string, listi
 	return rowsAffected, nil
 }
 
-func (ls *ListingService) GetListings(ctx context.Context, reqId string, limit int, cursor *dtos.ListingCursor) (*dtos.PaginatedListingsResponse, error) {
+func (ls *ListingService) GetListings(ctx context.Context, reqId string, limit int, cursor *dtos.ListingCursor, filter dtos.ListingFilter) (*dtos.PaginatedListingsResponse, error) {
 	fetchLimit := limit + 1
+	query, args := ls.buildGetListingsQuery(fetchLimit, cursor, filter)
 
-	queryWithoutCursor := `
-		SELECT 
-			l.id, l.title, l.description, l.price, l.city, l.image, l.status, l.created_at, l.updated_at, l.created_by,
-			i.id as image_id, i.object_key, i.position
-		FROM listings l
-		LEFT JOIN images i ON i.listing_id = l.id
-		WHERE l.id IN (
-			SELECT id FROM listings l2
-			WHERE l2.status = 'ready'
-			ORDER BY l2.created_at DESC, l2.id DESC 
-			LIMIT $1
-		)
-		ORDER BY l.created_at DESC, l.id DESC, i.position ASC;
-	`
-
-	queryWithCursor := `
-		SELECT 
-			l.id, l.title, l.description, l.price, l.city, l.image, l.status, l.created_at, l.updated_at, l.created_by,
-			i.id as image_id, i.object_key, i.position
-		FROM listings l
-		LEFT JOIN images i ON i.listing_id = l.id
-		WHERE l.id IN (
-			SELECT id FROM listings l2
-			WHERE l2.status = 'ready'
-			AND (l2.created_at, l2.id) < ($1, $2)
-			ORDER BY l2.created_at DESC, l2.id DESC 
-			LIMIT $3
-		)
-		ORDER BY l.created_at DESC, l.id DESC, i.position ASC;
-	`
-
-	var (
-		rows *sql.Rows
-		err  error
-	)
-
-	if cursor == nil {
-		rows, err = ls.Db.QueryContext(ctx, queryWithoutCursor, fetchLimit)
-	} else {
-		rows, err = ls.Db.QueryContext(ctx, queryWithCursor, cursor.CreatedAt, cursor.ID, fetchLimit)
-	}
-
+	rows, err := ls.Db.QueryContext(ctx, query, args...)
 	if err != nil {
 		ls.Logger.Error("Listing Service: GetListings query error", "request_id", reqId, "err", err)
 		return nil, err
 	}
 	defer rows.Close()
 
-	listings := make([]dtos.ListingResponse, 0)
-	listingIndex := make(map[string]int)
-
-	for rows.Next() {
-		var (
-			id          string
-			title       string
-			description string
-			price       int64
-			city        string
-			image       *string
-			status      string
-			createdAt   time.Time
-			updatedAt   time.Time
-			createdBy   *string
-			imageID     sql.NullString
-			objectKey   sql.NullString
-			position    sql.NullInt16
-		)
-
-		if err := rows.Scan(
-			&id,
-			&title,
-			&description,
-			&price,
-			&city,
-			&image,
-			&status,
-			&createdAt,
-			&updatedAt,
-			&createdBy,
-			&imageID,
-			&objectKey,
-			&position,
-		); err != nil {
-			ls.Logger.Error("Listing Service: GetListings scan error", "request_id", reqId, "err", err)
-			return nil, err
-		}
-
-		idx, exists := listingIndex[id]
-		if !exists {
-			item := dtos.ListingResponse{
-				ID:          id,
-				Title:       title,
-				Description: description,
-				Price:       price,
-				City:        city,
-				Image:       image,
-				Status:      status,
-				CreatedBy:   createdBy,
-				CreatedAt:   createdAt,
-				UpdatedAt:   updatedAt,
-				Images:      make([]dtos.ListingImage, 0),
-			}
-			listings = append(listings, item)
-			idx = len(listings) - 1
-			listingIndex[id] = idx
-		}
-
-		if imageID.Valid && objectKey.Valid {
-			listings[idx].Images = append(listings[idx].Images, dtos.ListingImage{
-				ID:        imageID.String,
-				ObjectKey: objectKey.String,
-				Position:  position.Int16,
-			})
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		ls.Logger.Error("Listing Service: GetListings rows error", "request_id", reqId, "err", err)
+	listings, err := scanListings(rows)
+	if err != nil {
+		ls.Logger.Error("Listing Service: GetListings scan error", "request_id", reqId, "err", err)
 		return nil, err
 	}
 
@@ -306,30 +202,113 @@ func (ls *ListingService) GetListingByID(ctx context.Context, reqId string, list
 	}
 	defer rows.Close()
 
-	var listing *dtos.ListingResponse
+	listings, err := scanListings(rows)
+	if err != nil {
+		ls.Logger.Error("Listing Service: GetListingByID scan error", "request_id", reqId, "listing_id", listingId, "err", err)
+		return nil, err
+	}
+
+	if len(listings) == 0 {
+		return nil, ErrListingNotFound
+	}
+
+	return &listings[0], nil
+}
+
+func (ls *ListingService) buildGetListingsQuery(fetchLimit int, cursor *dtos.ListingCursor, filter dtos.ListingFilter) (string, []any) {
+	var (
+		whereClauses []string
+		args         []any
+		argIndex     = 1
+	)
+
+	// Status filter (default is 'ready', unless explicitly 'all')
+	if filter.Status != "" && filter.Status != "all" {
+		whereClauses = append(whereClauses, fmt.Sprintf("l2.status = $%d", argIndex))
+		args = append(args, filter.Status)
+		argIndex++
+	}
+
+	// City filter (case-insensitive)
+	if filter.City != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("l2.city ILIKE $%d", argIndex))
+		args = append(args, filter.City)
+		argIndex++
+	}
+
+	// PriceFrom filter (client sends Rupees, DB stores Paise)
+	if filter.PriceFrom != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("l2.price >= $%d", argIndex))
+		args = append(args, dtos.RupeesToPaise(*filter.PriceFrom))
+		argIndex++
+	}
+
+	// PriceTo filter (client sends Rupees, DB stores Paise)
+	if filter.PriceTo != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("l2.price <= $%d", argIndex))
+		args = append(args, dtos.RupeesToPaise(*filter.PriceTo))
+		argIndex++
+	}
+
+	// Keyset cursor seek
+	if cursor != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("(l2.created_at, l2.id) < ($%d, $%d)", argIndex, argIndex+1))
+		args = append(args, cursor.CreatedAt, cursor.ID)
+		argIndex += 2
+	}
+
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	limitPlaceholder := fmt.Sprintf("$%d", argIndex)
+	args = append(args, fetchLimit)
+
+	query := fmt.Sprintf(`
+		SELECT 
+			l.id, l.title, l.description, l.price, l.city, l.image, l.status, l.created_at, l.updated_at, l.created_by,
+			i.id as image_id, i.object_key, i.position
+		FROM listings l
+		LEFT JOIN images i ON i.listing_id = l.id
+		WHERE l.id IN (
+			SELECT id FROM listings l2
+			%s
+			ORDER BY l2.created_at DESC, l2.id DESC 
+			LIMIT %s
+		)
+		ORDER BY l.created_at DESC, l.id DESC, i.position ASC;
+	`, whereSQL, limitPlaceholder)
+
+	return query, args
+}
+
+func scanListings(rows *sql.Rows) ([]dtos.ListingResponse, error) {
+	listings := make([]dtos.ListingResponse, 0)
+	listingIndex := make(map[string]int)
 
 	for rows.Next() {
 		var (
-			id          string
-			title       string
-			description string
-			price       int64
-			city        string
-			image       *string
-			status      string
-			createdAt   time.Time
-			updatedAt   time.Time
-			createdBy   *string
-			imageID     sql.NullString
-			objectKey   sql.NullString
-			position    sql.NullInt16
+			id           string
+			title        string
+			description  string
+			priceInPaise int64
+			city         string
+			image        *string
+			status       string
+			createdAt    time.Time
+			updatedAt    time.Time
+			createdBy    *string
+			imageID      sql.NullString
+			objectKey    sql.NullString
+			position     sql.NullInt16
 		)
 
 		if err := rows.Scan(
 			&id,
 			&title,
 			&description,
-			&price,
+			&priceInPaise,
 			&city,
 			&image,
 			&status,
@@ -340,16 +319,16 @@ func (ls *ListingService) GetListingByID(ctx context.Context, reqId string, list
 			&objectKey,
 			&position,
 		); err != nil {
-			ls.Logger.Error("Listing Service: GetListingByID scan error", "request_id", reqId, "listing_id", listingId, "err", err)
 			return nil, err
 		}
 
-		if listing == nil {
-			listing = &dtos.ListingResponse{
+		idx, exists := listingIndex[id]
+		if !exists {
+			item := dtos.ListingResponse{
 				ID:          id,
 				Title:       title,
 				Description: description,
-				Price:       price,
+				Price:       dtos.PaiseToRupees(priceInPaise),
 				City:        city,
 				Image:       image,
 				Status:      status,
@@ -358,10 +337,13 @@ func (ls *ListingService) GetListingByID(ctx context.Context, reqId string, list
 				UpdatedAt:   updatedAt,
 				Images:      make([]dtos.ListingImage, 0),
 			}
+			listings = append(listings, item)
+			idx = len(listings) - 1
+			listingIndex[id] = idx
 		}
 
 		if imageID.Valid && objectKey.Valid {
-			listing.Images = append(listing.Images, dtos.ListingImage{
+			listings[idx].Images = append(listings[idx].Images, dtos.ListingImage{
 				ID:        imageID.String,
 				ObjectKey: objectKey.String,
 				Position:  position.Int16,
@@ -370,15 +352,10 @@ func (ls *ListingService) GetListingByID(ctx context.Context, reqId string, list
 	}
 
 	if err := rows.Err(); err != nil {
-		ls.Logger.Error("Listing Service: GetListingByID rows error", "request_id", reqId, "listing_id", listingId, "err", err)
 		return nil, err
 	}
 
-	if listing == nil {
-		return nil, ErrListingNotFound
-	}
-
-	return listing, nil
+	return listings, nil
 }
 
 func (ls *ListingService) prepareJobPayload(listingUploadKeys dtos.ListingUploadKeys) jobs.ProcessImagepayload {
