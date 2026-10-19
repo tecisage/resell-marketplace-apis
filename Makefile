@@ -1,4 +1,4 @@
-.PHONY: build run clean vet
+.PHONY: build run clean vet test docker-up docker-down
 
 build:
 	@go build -o bin/api ./cmd/api
@@ -6,11 +6,20 @@ build:
 run: build
 	@./bin/api
 
+test:
+	@go test -v -race ./...
+
 clean:
 	@rm -rf bin
 
 vet:
 	@go vet ./...
+
+docker-up:
+	@docker compose up -d
+
+docker-down:
+	@docker compose down
 
 migrate-up:
 	@go run ./cmd/migrate up

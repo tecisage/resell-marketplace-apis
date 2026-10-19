@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: resell-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: resell_user
+      POSTGRES_PASSWORD: resell_password
+      POSTGRES_DB: resell_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U resell_user -d resell_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resell-api
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      PORT: "8090"
+      ENV: "development"
+      DB_URL: "postgres://resell_user:resell_password@postgres:5432/resell_db?sslmode=disable"
+      JWT_SECRET: "development-super-secret-jwt-key-32b"
+      R2_ACCOUNT_ID: "${R2_ACCOUNT_ID:-local}"
+      R2_ACCESS_KEY: "${R2_ACCESS_KEY:-local}"
+      R2_ACCESS_SECRET: "${R2_ACCESS_SECRET:-local}"
+      R2_BUCKET: "${R2_BUCKET:-resell-apis}"
+      ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

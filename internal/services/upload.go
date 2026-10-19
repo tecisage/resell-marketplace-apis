@@ -23,10 +23,10 @@ func NewUploadService(logger *slog.Logger, r2Client *storage.Client) *UploadServ
 	}
 }
 
-func (us *UploadService) GetPresignedURLs(files []dtos.FileKeyAndSize, expiry time.Duration) (dtos.PresignResponse, error) {
+func (us *UploadService) GetPresignedURLs(ctx context.Context, files []dtos.FileKeyAndSize, expiry time.Duration) (dtos.PresignResponse, error) {
 	presignedURLs := make([]dtos.PresignedURLWithKey, len(files))
 	for i, file := range files {
-		presignResult, err := us.R2Client.Presigner.PresignPutObject(context.TODO(), &s3.PutObjectInput{
+		presignResult, err := us.R2Client.Presigner.PresignPutObject(ctx, &s3.PutObjectInput{
 			Bucket:        aws.String(us.R2Client.Bucket),
 			Key:           aws.String(file.Key),
 			ContentType:   aws.String(dtos.GetContentType(file.Key)),
