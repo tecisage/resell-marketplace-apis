@@ -15,6 +15,11 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const (
+	cleanupInterval = 2 * time.Minute
+	bucketTTL       = 10 * time.Minute
+)
+
 type bucket struct {
 	limiter  *rate.Limiter
 	lastSeen time.Time
@@ -44,6 +49,34 @@ func (bl *bucketLimiter) allow(ip string) bool {
 	return b.limiter.Allow()
 }
 
+func (bl *bucketLimiter) cleanUp() {
+	ticker := time.NewTicker(cleanupInterval)
+	defer ticker.Stop()
+
+	for now := range ticker.C {
+		bl.mu.Lock()
+		for k, v := range bl.items {
+			if now.Sub(v.lastSeen) > bucketTTL {
+				delete(bl.items, k)
+			}
+		}
+		bl.mu.Unlock()
+	}
+
+	// for {
+	// 	select {
+	// 	case now := <-ticker.C:
+	// 		bl.mu.Lock()
+	// 		for key, val := range bl.items {
+	// 			if now.Sub(val.lastSeen) > bucketTTL {
+	// 				delete(bl.items, key)
+	// 			}
+	// 		}
+	// 		bl.mu.Unlock()
+	// 	}
+	// }
+}
+
 func RateLimitMiddleware(logger *slog.Logger, limit rate.Limit, burst int, cfg config.Config) func(http.Handler) http.Handler {
 
 	bl := &bucketLimiter{
@@ -53,6 +86,7 @@ func RateLimitMiddleware(logger *slog.Logger, limit rate.Limit, burst int, cfg c
 	}
 
 	// todo : Trigger Clean up - after TTL
+	go bl.cleanUp()
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
