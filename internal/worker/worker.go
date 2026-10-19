@@ -34,6 +34,7 @@ type Worker struct {
 	db      *sql.DB
 	storage *storage.Client
 	logger  *slog.Logger
+	done    chan struct{}
 }
 
 func NewWorker(db *sql.DB, storage *storage.Client, logger *slog.Logger) *Worker {
@@ -41,22 +42,51 @@ func NewWorker(db *sql.DB, storage *storage.Client, logger *slog.Logger) *Worker
 		db:      db,
 		storage: storage,
 		logger:  logger,
+		done:    make(chan struct{}),
 	}
 }
 
 func (w *Worker) Run(ctx context.Context) {
 	w.logger.Info("Worker Started")
+	defer close(w.done)
 	for {
+
+		select {
+		case <-ctx.Done():
+			w.logger.Info("Worker Stopped")
+			// now we have two way to unblock the worker at main one way is close done channel and other way is send data on the done channel.
+			// if we close done channel then main will not able to receive data from the done channel and will get unblock.
+			// if we send data on the done channel then main will receive and get unblock but we can't close the done channel because it is already open and we have already send data on it.
+			// so we have to choose one way to unblock the worker done at main.
+
+			// w.done <- struct{}{} -- sending data on the done channel - this will unblock main()
+			// close(w.done)  --> handled by defer - closing the done channel - this will unblock main()
+			return
+		default:
+		}
+
 		isEmpty, err := w.claimAndProcess(ctx)
 		if err != nil {
 			w.logger.Error("Error claiming job", "error", err)
 			continue
 		}
 		if isEmpty {
-			w.logger.Info("No jobs found , will retry after ", "JobPollInterval", JobPollInterval)
-			time.Sleep(JobPollInterval)
+
+			select {
+			case <-ctx.Done():
+				w.logger.Info("Worker Stopped")
+				// close(w.done) --> handled by defer
+				return
+			case <-time.After(JobPollInterval):
+				w.logger.Info("No jobs found , will retry after ", "JobPollInterval", JobPollInterval)
+				// continue to next iteration
+			}
 		}
 	}
+}
+
+func (w *Worker) Done() <-chan struct{} {
+	return w.done
 }
 
 func (w *Worker) claimAndProcess(ctx context.Context) (bool, error) {

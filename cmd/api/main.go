@@ -22,6 +22,7 @@ import (
 
 const (
 	serverShutdownTimeout = 15 * time.Second
+	workerShutdownTimeout = 10 * time.Second
 )
 
 func main() {
@@ -50,7 +51,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	// Object Storage Initialisation
-	r2Client, err := storage.NewR2Client(context.TODO(), storage.R2Config{
+	r2Client, err := storage.NewR2Client(ctx, storage.R2Config{
 		AccountID:    cfg.R2_ACCOUNT_ID,
 		AccessKey:    cfg.R2_ACCESS_KEY,
 		AccessSecret: cfg.R2_ACCESS_SECRET,
@@ -62,7 +63,7 @@ func main() {
 
 	// worker
 	worker := worker.NewWorker(db, r2Client, logger)
-	go worker.Run(context.TODO())
+	go worker.Run(ctx)
 
 	// create mux
 	mux := http.NewServeMux()
@@ -131,21 +132,32 @@ func main() {
 
 	// wait for interrupt signal - unblock when we receive the interrupt signal (ctrl + c) or kill command
 	<-ctx.Done()
-	logger.Info("siginal received, shutting down gracefully")
 	stop()
 
 	// shutdown server gracefully or Clear the resources
 	// give 1 minute to server to shut down gracefully
-
-	// 1) stop accepting new requests
-	// 2) wait for existing requests to finish
-	// 3) clean up resources (close db, close r2 client, etc)
+	logger.Info("Shutdown server gracefully", "serverShutdownTimeout", serverShutdownTimeout)
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 	defer shutdownCancel()
 
+	// 1) stop accepting new requests
+	// 2) wait for existing requests to finish
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("main.srv.Shutdown: %v", err)
 	}
 
+	// 3) clean up resources (close db, close r2 client, etc)
+	// wait for worker to finish all
+	select {
+	case <-worker.Done():
+		logger.Info("worker shutted down")
+	case <-time.After(workerShutdownTimeout):
+		// here we don't have any option to force shutdown the worker
+		// because done channel is not closed and worker is not accepting
+		logger.Warn("worker is not shutted down yet , forcefull shutdown", "Timeout", workerShutdownTimeout)
+	}
+
+	db.Close()
+	logger.Info("server shutted down")
 }
